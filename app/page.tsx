@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
 
 const ThetaViewer = dynamic(() => import("./components/ThetaViewer"), {
@@ -10,17 +10,31 @@ const ThetaViewer = dynamic(() => import("./components/ThetaViewer"), {
 export default function Home() {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeObjectUrlRef = useRef<string | null>(null);
 
   const handleFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      // Revoke old object URL to free memory
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-      setImageUrl(URL.createObjectURL(file));
+      if (activeObjectUrlRef.current) {
+        URL.revokeObjectURL(activeObjectUrlRef.current);
+      }
+      const nextObjectUrl = URL.createObjectURL(file);
+      activeObjectUrlRef.current = nextObjectUrl;
+      setImageUrl(nextObjectUrl);
+      e.target.value = "";
     },
-    [imageUrl]
+    []
   );
+
+  useEffect(() => {
+    return () => {
+      if (activeObjectUrlRef.current) {
+        URL.revokeObjectURL(activeObjectUrlRef.current);
+        activeObjectUrlRef.current = null;
+      }
+    };
+  }, []);
 
   const openFilePicker = () => fileInputRef.current?.click();
 
@@ -59,7 +73,7 @@ export default function Home() {
               <polyline points="17 8 12 3 7 8" />
               <line x1="12" y1="3" x2="12" y2="15" />
             </svg>
-            画像を選択
+            画像を再選択
           </button>
         </div>
       ) : (
