@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 
 interface ThetaViewerProps {
@@ -12,11 +12,12 @@ export default function ThetaViewer({ imageUrl }: ThetaViewerProps) {
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const meshRef = useRef<THREE.Mesh | null>(null);
-  const frameRef = useRef<number>(0);
+  const meshRef =
+    useRef<THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null>(
+      null
+    );
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // interaction state
   const isRotatingRef = useRef(false);
   const latRef = useRef(0);
   const lngRef = useRef(0);
@@ -33,30 +34,17 @@ export default function ThetaViewer({ imageUrl }: ThetaViewerProps) {
     const mesh = meshRef.current;
     if (!mesh) return;
 
-    if (sceneRef.current) {
-      sceneRef.current.remove(mesh);
-    }
-
+    sceneRef.current?.remove(mesh);
     mesh.geometry.dispose();
-    const material = mesh.material;
-    if (Array.isArray(material)) {
-      for (const item of material) {
-        const mappedMaterial = item as THREE.MeshBasicMaterial;
-        mappedMaterial.map?.dispose();
-        item.dispose();
-      }
-    } else {
-      const mappedMaterial = material as THREE.MeshBasicMaterial;
-      mappedMaterial.map?.dispose();
-      material.dispose();
-    }
-
+    mesh.material.map?.dispose();
+    mesh.material.dispose();
     meshRef.current = null;
   }, []);
 
   const updateCamera = useCallback(() => {
     const camera = cameraRef.current;
     if (!camera) return;
+
     const phi = ((90 - latRef.current) * Math.PI) / 180;
     const theta = (lngRef.current * Math.PI) / 180;
     camera.lookAt(
@@ -66,15 +54,23 @@ export default function ThetaViewer({ imageUrl }: ThetaViewerProps) {
     );
   }, []);
 
-  // Build / rebuild scene when imageUrl changes
+  const updateFov = useCallback((nextFov: number) => {
+    const camera = cameraRef.current;
+    if (!camera) return;
+
+    camera.fov = Math.max(20, Math.min(150, nextFov));
+    camera.updateProjectionMatrix();
+  }, []);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
     let active = true;
     setLoadError(null);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setClearColor(0x000000);
     container.appendChild(renderer.domElement);
@@ -101,8 +97,6 @@ export default function ThetaViewer({ imageUrl }: ThetaViewerProps) {
           return;
         }
 
-        disposeMesh();
-
         const imgW = texture.image.width as number;
         const imgH = texture.image.height as number;
 
@@ -119,7 +113,6 @@ export default function ThetaViewer({ imageUrl }: ThetaViewerProps) {
           thetaStart,
           thetaLength
         );
-        // Flip the sphere inside-out
         geometry.scale(-1, 1, 1);
 
         const material = new THREE.MeshBasicMaterial({ map: texture });
@@ -129,22 +122,19 @@ export default function ThetaViewer({ imageUrl }: ThetaViewerProps) {
       },
       undefined,
       () => {
-        if (active) {
-          setLoadError("画像の読み込みに失敗しました。別の画像を選択してください。");
-        }
+        if (!active) return;
+        setLoadError("画像の読み込みに失敗しました。別の画像を選択してください。");
       }
     );
 
-    let animFrameId: number;
+    let animFrameId = 0;
     const animate = () => {
       animFrameId = requestAnimationFrame(animate);
       renderer.render(scene, camera);
     };
     animate();
-    frameRef.current = animFrameId!;
 
     const onResize = () => {
-      if (!container) return;
       camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
@@ -158,20 +148,20 @@ export default function ThetaViewer({ imageUrl }: ThetaViewerProps) {
       disposeMesh();
       renderer.dispose();
       renderer.domElement.remove();
-      rendererRef.current = null;
+      if (rendererRef.current === renderer) rendererRef.current = null;
       sceneRef.current = null;
       cameraRef.current = null;
     };
   }, [disposeMesh, imageUrl, updateCamera]);
 
-  // Pointer / touch / wheel event handlers
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
     const getTouchDistance = (t1: Touch, t2: Touch) => {
       const dx = t1.screenX - t2.screenX;
       const dy = t1.screenY - t2.screenY;
-      return Math.hypot(dx, dy);
+      return Math.sqrt(dx * dx + dy * dy);
     };
 
     const onMouseDown = (e: MouseEvent) => {
@@ -184,6 +174,7 @@ export default function ThetaViewer({ imageUrl }: ThetaViewerProps) {
 
     const onMouseMove = (e: MouseEvent) => {
       if (!isRotatingRef.current) return;
+
       latRef.current = Math.max(
         -85,
         Math.min(
@@ -206,54 +197,42 @@ export default function ThetaViewer({ imageUrl }: ThetaViewerProps) {
         const t = e.touches[0];
         touchXRef.current = t.screenX;
         touchYRef.current = t.screenY;
-      } else if (e.touches.length === 2) {
+        return;
+      }
+      if (e.touches.length === 2) {
         pinchDistanceRef.current = getTouchDistance(e.touches[0], e.touches[1]);
-        pinchStartFovRef.current = cameraRef.current?.fov ?? 72;
+        pinchStartFovRef.current = cameraRef.current?.fov ?? pinchStartFovRef.current;
       }
     };
 
     const onTouchMove = (e: TouchEvent) => {
       e.preventDefault();
-      if (e.touches.length === 1) {
-        const t = e.touches[0];
-        latRef.current = Math.max(
-          -85,
-          Math.min(85, latRef.current + (t.screenY - touchYRef.current) * 0.2)
-        );
-        lngRef.current -= (t.screenX - touchXRef.current) * 0.2;
-        touchXRef.current = t.screenX;
-        touchYRef.current = t.screenY;
-        updateCamera();
+      if (e.touches.length === 2) {
+        const distance = getTouchDistance(e.touches[0], e.touches[1]);
+        if (distance > 0 && pinchDistanceRef.current > 0) {
+          const factor = pinchDistanceRef.current / distance;
+          updateFov(pinchStartFovRef.current * factor);
+        }
         return;
       }
+      if (e.touches.length !== 1) return;
 
-      if (e.touches.length === 2) {
-        const currentDistance = getTouchDistance(e.touches[0], e.touches[1]);
-        if (pinchDistanceRef.current <= 0 || currentDistance <= 0) {
-          return;
-        }
-
-        const camera = cameraRef.current;
-        if (!camera) return;
-
-        const zoomFactor = pinchDistanceRef.current / currentDistance;
-        const nextFov = Math.max(
-          20,
-          Math.min(150, pinchStartFovRef.current * zoomFactor)
-        );
-        camera.fov = nextFov;
-        camera.updateProjectionMatrix();
-      }
+      const t = e.touches[0];
+      latRef.current = Math.max(
+        -85,
+        Math.min(85, latRef.current + (t.screenY - touchYRef.current) * 0.2)
+      );
+      lngRef.current -= (t.screenX - touchXRef.current) * 0.2;
+      touchXRef.current = t.screenX;
+      touchYRef.current = t.screenY;
+      updateCamera();
     };
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const camera = cameraRef.current;
       if (!camera) return;
-      let fov = camera.fov + e.deltaY * 0.05;
-      fov = Math.max(20, Math.min(150, fov));
-      camera.fov = fov;
-      camera.updateProjectionMatrix();
+      updateFov(camera.fov + e.deltaY * 0.05);
     };
 
     container.addEventListener("mousedown", onMouseDown);
@@ -273,16 +252,16 @@ export default function ThetaViewer({ imageUrl }: ThetaViewerProps) {
       container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("wheel", onWheel);
     };
-  }, [updateCamera]);
+  }, [updateCamera, updateFov]);
 
   return (
-    <div className="relative w-full h-full">
+    <div className="relative h-full w-full">
       <div
         ref={containerRef}
-        className="w-full h-full cursor-grab active:cursor-grabbing"
+        className="h-full w-full cursor-grab touch-none active:cursor-grabbing"
       />
       {loadError ? (
-        <div className="pointer-events-none absolute top-4 left-1/2 -translate-x-1/2 rounded-md bg-black/60 px-3 py-2 text-xs text-red-200">
+        <div className="pointer-events-none absolute left-3 top-3 rounded bg-black/60 px-3 py-2 text-xs text-white">
           {loadError}
         </div>
       ) : null}
